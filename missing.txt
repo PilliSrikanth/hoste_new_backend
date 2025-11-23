@@ -1,0 +1,6 @@
+hotels
+hostel category
+    boys or girls or rooms
+    upload images
+    live location show near by toprate hostels and near by hostels
+    searchplace near by hostels
