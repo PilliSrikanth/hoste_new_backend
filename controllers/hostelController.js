@@ -61,6 +61,39 @@ exports.getSingleHostel = async (req, res) => {
 };
 
 
+
+// -------------------------
+// Helper to map numeric sharing keys to schema keys
+// -------------------------
+const sharingKeyMap = {
+  2: 'twoSharing',
+  3: 'threeSharing',
+  4: 'fourSharing',
+  5: 'fiveSharing',
+  6: 'sixSharing',
+};
+
+function mapSharingData(input = {}) {
+  const output = {
+    twoSharing: 0,
+    threeSharing: 0,
+    fourSharing: 0,
+    fiveSharing: 0,
+    sixSharing: 0,
+  };
+
+  for (const key in input) {
+    const mappedKey = sharingKeyMap[key];
+    if (mappedKey) {
+      output[mappedKey] = Number(input[key]) || 0;
+    }
+  }
+  return output;
+}
+
+// -------------------------
+// Add Hostel Controller
+// -------------------------
 exports.addHostel = async (req, res) => {
   try {
     const hostelData = JSON.parse(req.body.hostel);
@@ -71,11 +104,7 @@ exports.addHostel = async (req, res) => {
     const hostelImages = [];
     const hostelVideos = [];
     const sharingMedia = {}; 
-    // structure:
-    // sharingMedia = {
-    //   "1": { images: [], videos: [] },
-    //   "2": { images: [], videos: [] }
-    // }
+    // structure: sharingMedia = { "1": { images: [], videos: [] }, "2": { images: [], videos: [] } }
 
     // -------------------------
     // FILE PROCESSING
@@ -95,14 +124,11 @@ exports.addHostel = async (req, res) => {
         // SHARING MEDIA
         else if (file.fieldname.startsWith('sharing_')) {
           const parts = file.fieldname.split('_');
-          const sharingType = parts[1]; // 1,2,3
+          const sharingType = parts[1]; // 2,3,4,5,6
           const mediaType = parts[2];   // images or videos
 
           if (!sharingMedia[sharingType]) {
-            sharingMedia[sharingType] = {
-              images: [],
-              videos: []
-            };
+            sharingMedia[sharingType] = { images: [], videos: [] };
           }
 
           sharingMedia[sharingType][mediaType].push(filePath);
@@ -114,12 +140,16 @@ exports.addHostel = async (req, res) => {
     // SAVE HOSTEL
     // -------------------------
     const hostel = new Hostel({
-      ...hostelData,
+      name: hostelData.name,
+      area: hostelData.area,
+      address: hostelData.address,
+      ownerId: hostelData.ownerId,
+      type: hostelData.type,
       images: hostelImages,
       videos: hostelVideos,
       sharingMedia,
-      roomSharing: hostelData.roomSharing || {},
-      vacancy: hostelData.vacancy || {},
+      roomSharing: mapSharingData(hostelData.roomSharing),
+      vacancy: mapSharingData(hostelData.vacancy),
       location: hostelData.location || { type: 'Point', coordinates: [0, 0] }
     });
 
