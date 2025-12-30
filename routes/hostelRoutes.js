@@ -12,10 +12,15 @@ router.get('/search-combo', hostelController.searchByAreaAndType);   // ?area=X&
 
 // geo endpoints
 router.get('/nearby', hostelController.getNearbyHostels);            // ?lat=&lng=&radius=
-router.get('/nearby/top-rated', hostelController.getNearbyTopRated); // ?lat=&lng=&radius=&limit=5
+router.get('/nearby/top-rated', hostelController.getTopRatedHostels); // ?lat=&lng=&radius=&limit=5
 
 // create with images (multipart/form-data)
-router.post('/add', upload.array('images', 8), hostelController.addHostel);
+router.post(
+  '/add',
+  upload.any(),
+  hostelController.addHostel
+);
+
 
 // decrement vacancy when booking
 router.post('/book/:id', hostelController.decrementVacancy);

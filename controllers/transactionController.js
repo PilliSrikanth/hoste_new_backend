@@ -66,7 +66,7 @@ exports.verifyPayment = async (req, res) => {
     );
 
     // Redirect user to frontend with status
-    res.redirect(`http://localhost:60768/payment/${data.status}/${data.txnid}`);
+    res.redirect(`http://localhost:56006/payment/${data.status}/${data.txnid}`);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

@@ -60,35 +60,85 @@ exports.getSingleHostel = async (req, res) => {
   }
 };
 
-// Add new hostel (owner)
+
 exports.addHostel = async (req, res) => {
   try {
-    // expecting req.body to contain name, area, address, pricePerMonth, description, ownerId, ownerName, ownerPhone, type,
-    // and location.coordinates like [lng, lat]. images may be uploaded in req.files
-    const body = req.body;
+    const hostelData = JSON.parse(req.body.hostel);
 
-    // if images uploaded via multer
-    if (req.files && req.files.length) {
-      body.images = req.files.map(f => `/uploads/${f.filename}`); // change to cloud URL if using cloudinary
+    // -------------------------
+    // STORAGE OBJECTS
+    // -------------------------
+    const hostelImages = [];
+    const hostelVideos = [];
+    const sharingMedia = {}; 
+    // structure:
+    // sharingMedia = {
+    //   "1": { images: [], videos: [] },
+    //   "2": { images: [], videos: [] }
+    // }
+
+    // -------------------------
+    // FILE PROCESSING
+    // -------------------------
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => {
+        const filePath = `/uploads/${file.filename}`;
+
+        // HOSTEL MEDIA
+        if (file.fieldname === 'images') {
+          hostelImages.push(filePath);
+        } 
+        else if (file.fieldname === 'videos') {
+          hostelVideos.push(filePath);
+        }
+
+        // SHARING MEDIA
+        else if (file.fieldname.startsWith('sharing_')) {
+          const parts = file.fieldname.split('_');
+          const sharingType = parts[1]; // 1,2,3
+          const mediaType = parts[2];   // images or videos
+
+          if (!sharingMedia[sharingType]) {
+            sharingMedia[sharingType] = {
+              images: [],
+              videos: []
+            };
+          }
+
+          sharingMedia[sharingType][mediaType].push(filePath);
+        }
+      });
     }
 
-    // parse vacancy/roomSharing if provided as stringified JSON from form-data
-    if (typeof body.roomSharing === 'string') body.roomSharing = JSON.parse(body.roomSharing);
-    if (typeof body.vacancy === 'string') body.vacancy = JSON.parse(body.vacancy);
-    if (typeof body.location === 'string') body.location = JSON.parse(body.location); // { coordinates: [lng,lat] }
-
-    // set defaults & required
+    // -------------------------
+    // SAVE HOSTEL
+    // -------------------------
     const hostel = new Hostel({
-      ...body,
-      location: body.location || { type: 'Point', coordinates: [0, 0] }
+      ...hostelData,
+      images: hostelImages,
+      videos: hostelVideos,
+      sharingMedia,
+      roomSharing: hostelData.roomSharing || {},
+      vacancy: hostelData.vacancy || {},
+      location: hostelData.location || { type: 'Point', coordinates: [0, 0] }
     });
 
     const savedHostel = await hostel.save();
-    res.status(201).json({ message: 'Hostel created successfully', data: savedHostel });
+
+    res.status(201).json({
+      message: 'Hostel created successfully',
+      data: savedHostel
+    });
+
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    console.error(error);
+    res.status(400).json({
+      message: 'Failed to create hostel',
+      error: error.message
+    });
   }
 };
+
 
 // filter by type (boys/girls/pg/room)
 exports.filterByType = async (req, res) => {
@@ -144,60 +194,48 @@ exports.getNearbyHostels = async (req, res) => {
 };
 
 // Nearby top rated - near by + sort by rating desc + limit
-exports.getNearbyTopRated = async (req, res) => {
+exports.getTopRatedHostels = async (req, res) => {
   try {
-    const { lat, lng, radius = 5000, limit = 10 } = req.query;
-    if (!lat || !lng) return res.status(400).json({ message: 'lat and lng query required' });
+    const { limit = 10 } = req.query;
 
-    const coords = [parseFloat(lng), parseFloat(lat)];
-
-    // 1️⃣ Find hostels near the location
-    const nearbyHostels = await Hostel.find({
-      location: {
-        $nearSphere: {
-          $geometry: { type: "Point", coordinates: coords },
-          $maxDistance: parseInt(radius)
-        }
-      }
-    });
-
-    const hostelIds = nearbyHostels.map(h => h._id);
-
-    // 2️⃣ Aggregate reviews to get average rating per hostel
-    const reviewAggregation = await Review.aggregate([
-      { $match: { hostelId: { $in: hostelIds } } },
+    // 1️⃣ Group reviews to calculate rating summary
+    const ratingAgg = await Review.aggregate([
       {
         $group: {
           _id: "$hostelId",
           avgRating: { $avg: "$rating" },
-          count: { $sum: 1 }
+          reviewCount: { $sum: 1 }
         }
       },
       { $sort: { avgRating: -1 } },
       { $limit: parseInt(limit) }
     ]);
 
-    // 3️⃣ Populate hostel info
-    const topRatedHostels = await Hostel.find({ _id: { $in: reviewAggregation.map(r => r._id) } });
+    if (ratingAgg.length === 0) {
+      return res.status(200).json({ data: [] });
+    }
 
-    // 4️⃣ Merge average rating into hostel objects
-    const result = topRatedHostels.map(h => {
-      const reviewData = reviewAggregation.find(r => r._id.toString() === h._id.toString());
+    // 2️⃣ Get hostel details
+    const hostelIds = ratingAgg.map(r => r._id);
+    const hostels = await Hostel.find({ _id: { $in: hostelIds } }).lean();
+
+    // 3️⃣ Merge rating + hostel details, keep order
+    const result = ratingAgg.map(rating => {
+      const hostel = hostels.find(h => h._id.toString() === rating._id.toString());
       return {
-        ...h.toObject(),
-        avgRating: reviewData?.avgRating || 0,
-        reviewCount: reviewData?.count || 0
+        ...hostel,
+        avgRating: rating.avgRating,
+        reviewCount: rating.reviewCount
       };
     });
 
-    // 5️⃣ Sort by avgRating descending
-    result.sort((a, b) => b.avgRating - a.avgRating);
-
     res.status(200).json({ data: result });
+
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
+
 // update vacancy when booking (decrement)
 exports.decrementVacancy = async (req, res) => {
   try {

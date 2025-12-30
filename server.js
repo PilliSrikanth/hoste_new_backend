@@ -13,6 +13,7 @@ const ownerRoutes = require('./routes/ownerRoutes');
 const reviewRoutes = require("./routes/reviewRoutes");
 const transaction = require('./routes/transactionRoutes');
 const notification = require('./routes/notification');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3200;
@@ -58,7 +59,8 @@ app.use(cors({
   origin: [
     "http://localhost:4200",
     "https://hostel-find.vercel.app",
-    "http://localhost:57971"
+    "http://localhost:56006",
+    "https://pillisrikanth.github.io/amgular_admin"
   ],
   credentials: true
 }));
@@ -84,6 +86,9 @@ app.use("/api/requests", requestRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/", transaction);
 app.use('/api/notification', notification);
+app.use('/uploads', express.static('uploads'));
+
+
 
 // Admin
 app.use("/api/owner", ownerRoutes);

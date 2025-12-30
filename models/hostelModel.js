@@ -5,7 +5,7 @@ const hostelSchema = new mongoose.Schema({
   name: { type: String, required: true },
   area: { type: String, required: true },
   address: { type: String },
-  images: [{ type: String }],            
+  images: [String],       
   description: { type: String },
   distance: { type: Number },
 
@@ -31,6 +31,23 @@ const hostelSchema = new mongoose.Schema({
     fiveSharing: { type: Number, default: 0 },
     sixSharing: { type: Number, default: 0 },
   },
+  sharingImages: {
+  twoSharing: { type: String },
+  threeSharing: { type: String },
+  fourSharing: { type: String },
+  fiveSharing: { type: String },
+  sixSharing: { type: String }
+},
+sharingMedia: {
+  type: Map,
+  of: {
+    images: [String],
+    videos: [String]
+  }
+},
+images: [String],
+videos: [String],
+
 
   // 🔹 location as GeoJSON point (longitude, latitude)
   location: {
