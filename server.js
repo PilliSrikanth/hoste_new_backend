@@ -60,6 +60,7 @@ app.use(cors({
     "http://localhost:4200",
     "https://hostel-find.vercel.app",
     "http://localhost:56006",
+    "https://pillisrikanth.github.io/amgular_admin",
     "https://pillisrikanth.github.io/amgular_admin"
   ],
   credentials: true
