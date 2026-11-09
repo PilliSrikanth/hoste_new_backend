@@ -29,15 +29,8 @@ ownerId: {
   sharingPrice: { type: Number, required: false },
 sharingType: {
   type: String,
-  enum: [
-    "oneSharing",
-    "twoSharing",
-    "threeSharing",
-    "fourSharing",
-    "fiveSharing",
-    "sixSharing",
-  ],
-  required: true,
+  enum: ["2", "3", "4", "5", "6"],
+  required: true
 },
   createdAt: {
     type: Date,

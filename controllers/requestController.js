@@ -1,14 +1,116 @@
+// controllers/requestController.js
+
+const mongoose = require("mongoose");
+
 const Request = require("../models/requestModel");
 const Hostel = require("../models/hostelModel");
 const User = require("../models/userModel");
-const Notification = require('../models/Notification')
+const Notification = require("../models/Notification");
 
-// 🔍 Search users by email or mobile (admin)
+// =====================================================
+// SHARING TYPE HELPERS
+// =====================================================
+
+const sharingMap = {
+  "2": "twoSharing",
+  "3": "threeSharing",
+  "4": "fourSharing",
+  "5": "fiveSharing",
+  "6": "sixSharing",
+
+  twoSharing: "twoSharing",
+  threeSharing: "threeSharing",
+  fourSharing: "fourSharing",
+  fiveSharing: "fiveSharing",
+  sixSharing: "sixSharing"
+};
+
+const normalizeSharingType = (value) => {
+  const input = String(value || "").trim();
+
+  const numericMap = {
+    twoSharing: "2",
+    threeSharing: "3",
+    fourSharing: "4",
+    fiveSharing: "5",
+    sixSharing: "6"
+  };
+
+  if (["2", "3", "4", "5", "6"].includes(input)) {
+    return input;
+  }
+
+  return numericMap[input] || null;
+};
+
+const isValidId = (id) => mongoose.isValidObjectId(id);
+
+const getIO = (req) => req.app.get("io") || global.io;
+
+// =====================================================
+// CREATE + EMIT NOTIFICATION
+// Uses the same notification structure as adminChatController
+// =====================================================
+
+const createRequestNotification = async ({
+  req,
+  recipientId,
+  recipientType,
+  senderId,
+  senderType,
+  title,
+  message,
+  requestId,
+  actionUrl
+}) => {
+  try {
+    const notification = await Notification.create({
+      recipientId,
+      recipientType,
+      senderId,
+      senderType,
+      title,
+      message,
+      type: "request",
+      referenceId: requestId,
+      referenceType: "Request",
+      actionUrl,
+      isRead: false
+    });
+
+    const io = getIO(req);
+
+    if (io) {
+      const room = `${recipientType}-${recipientId.toString()}`;
+
+      io.to(room).emit(
+        "notification:new",
+        notification.toObject()
+      );
+    }
+
+    return notification;
+  } catch (error) {
+    // The request itself should remain saved if notification creation fails.
+    console.error("Request notification error:", error);
+    return null;
+  }
+};
+
+// =====================================================
+// SEARCH USERS
+// GET /api/requests/search-users?query=value
+// =====================================================
+
 exports.searchUsers = async (req, res) => {
   try {
-    const query = (req.query.query || "").trim();
+    const query = String(req.query.query || "").trim();
+
     if (!query) {
-      return res.status(400).json({ message: "Query is required" });
+      return res.status(400).json({
+        success: false,
+        message: "Query is required"
+      });
     }
 
     const users = await User.find({
@@ -16,240 +118,603 @@ exports.searchUsers = async (req, res) => {
         { email: { $regex: query, $options: "i" } },
         { mobile: { $regex: query, $options: "i" } }
       ]
-    }).select("name email mobile createdAt");
+    })
+      .select("name email mobile createdAt")
+      .limit(20)
+      .lean();
 
-    res.status(200).json({ count: users.length, data: users });
+    return res.status(200).json({
+      success: true,
+      count: users.length,
+      data: users
+    });
   } catch (error) {
-    res.status(500).json({ message: "Error searching users", error: error.message });
+    console.error("Search users error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Error searching users",
+      error: error.message
+    });
   }
 };
 
-// 📤 Send a request (owner → user OR user → owner)
+// =====================================================
+// SEND REQUEST
+// USER → OWNER or OWNER → USER
+// POST /api/requests/send
+// =====================================================
 
 exports.sendRequest = async (req, res) => {
   try {
-    let { ownerId, userId, hostelId, senderType, sharingType } = req.body;
+    let {
+      ownerId,
+      userId,
+      hostelId,
+      senderType,
+      sharingType,
+      propertyType,
+      requestType
+    } = req.body;
 
-    if (!["owner", "user"].includes(senderType)) {
-      return res.status(400).json({ message: "Invalid sender type" });
+    if (!["user", "owner"].includes(senderType)) {
+      return res.status(400).json({
+        success: false,
+        message: "senderType must be user or owner"
+      });
     }
 
-    // If user sends request, fetch owner from hostel
-    if (senderType === "user" && !ownerId) {
-      const hostel = await Hostel.findById(hostelId);
-      if (!hostel) return res.status(404).json({ message: "Hostel not found" });
+    if (!userId || !hostelId) {
+      return res.status(400).json({
+        success: false,
+        message: "userId and hostelId are required"
+      });
+    }
+
+    if (!isValidId(userId) || !isValidId(hostelId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid userId or hostelId"
+      });
+    }
+
+    const normalizedSharingType =
+      normalizeSharingType(sharingType);
+
+    if (!normalizedSharingType) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid sharing type: ${sharingType}`
+      });
+    }
+
+    const hostel = await Hostel.findById(hostelId);
+
+    if (!hostel) {
+      return res.status(404).json({
+        success: false,
+        message: "Hostel/property not found"
+      });
+    }
+
+    // For a user request, always use the actual property owner.
+    if (senderType === "user") {
       ownerId = hostel.ownerId;
     }
 
-    // Check if user already joined another hostel
+    if (!ownerId || !isValidId(ownerId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid ownerId is required"
+      });
+    }
+
+    if (
+      hostel.ownerId &&
+      hostel.ownerId.toString() !== ownerId.toString()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "The supplied owner does not own this property"
+      });
+    }
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    // Do not allow a user who has already joined another property
+    // to send a new booking request.
     const alreadyJoined = await Request.findOne({
       userId,
       status: "accepted"
     });
 
-    if (alreadyJoined && alreadyJoined.hostelId.toString() !== hostelId) {
+    if (
+      alreadyJoined &&
+      alreadyJoined.hostelId.toString() !== hostelId.toString()
+    ) {
       return res.status(400).json({
-        message: "User already joined another hostel! Cannot send request."
+        success: false,
+        message: "User has already joined another property"
       });
     }
 
-    // Block if already pending OR accepted for same hostel
-    const existing = await Request.findOne({
+    // Prevent duplicate pending/accepted requests.
+    const existingRequest = await Request.findOne({
       ownerId,
       userId,
       hostelId,
       status: { $in: ["pending", "accepted"] }
     });
 
-    if (existing) {
-      return res.status(400).json({
-        message: `Request already ${existing.status} between this owner and user`
+    if (existingRequest) {
+      return res.status(409).json({
+        success: false,
+        message: `Request is already ${existingRequest.status}`,
+        data: existingRequest
       });
     }
 
-    // Create new request
     const newRequest = new Request({
       ownerId,
       userId,
       hostelId,
       senderType,
-      sharingType
+      sharingType: normalizedSharingType,
+      propertyType,
+      requestType,
+      status: "pending"
     });
+
     await newRequest.save();
 
-    // Create notification for owner
-    await Notification.create({
-      userId: userId,
-      type: 'request',
-      message: `New hostel booking request from user ${userId}`,
-      data: { requestId: newRequest._id, hostelId, ownerId, userId },
-    });
+    // Notify the person who needs to respond.
+    if (senderType === "user") {
+      await createRequestNotification({
+        req,
+        recipientId: ownerId,
+        recipientType: "owner",
+        senderId: userId,
+        senderType: "user",
+        title: "New Pending Booking Request",
+        message: `${user.name || "A user"} sent a booking request for ${hostel.name || "your property"}. Status: Pending.`,
+        requestId: newRequest._id,
+        actionUrl: "/owner-requests"
+      });
+    } else {
+      await createRequestNotification({
+        req,
+        recipientId: userId,
+        recipientType: "user",
+        senderId: ownerId,
+        senderType: "owner",
+        title: "New Pending Property Request",
+        message: `The owner sent you a request for ${hostel.name || "a property"}. Status: Pending.`,
+        requestId: newRequest._id,
+        actionUrl: "/my-requests"
+      });
+    }
 
-    res.status(201).json({
-      message: `${senderType} request sent successfully`,
+    return res.status(201).json({
+      success: true,
+      message: "Request sent successfully. Status: Pending",
       data: newRequest
     });
   } catch (error) {
-    console.error("❌ Error sending request:", error);
-    res.status(500).json({ message: "Error sending request", error: error.message });
+    console.error("Send request error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Error sending request",
+      error: error.message
+    });
   }
 };
 
+// =====================================================
+// GET USER REQUESTS
+// GET /api/requests/user/:userId
+// Optional: /api/requests/user/:userId?status=pending
+// =====================================================
 
-// 📥 Get requests for a user (only requests where the user is receiver or sender)
 exports.getUserRequests = async (req, res) => {
   try {
     const { userId } = req.params;
+    const { status } = req.query;
 
-    // Only requests where the user is the receiver
-    const requests = await Request.find({ userId }) // userId is the receiver
-      .populate("ownerId", "name email")           // populate sender info
-      .populate("hostelId", "name area");         // populate hostel info
+    if (!isValidId(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid userId"
+      });
+    }
 
-    res.status(200).json({ count: requests.length, data: requests });
+    const filter = { userId };
+
+    if (status && ["pending", "accepted", "declined"].includes(status)) {
+      filter.status = status;
+    }
+
+    const requests = await Request.find(filter)
+      .populate("ownerId", "name email mobile")
+      .populate("hostelId", "name area address images roomSharing vacancy")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      count: requests.length,
+      pendingCount: requests.filter(
+        (request) => request.status === "pending"
+      ).length,
+      data: requests
+    });
   } catch (error) {
-    res.status(500).json({ message: "Error fetching user requests", error: error.message });
+    console.error("Get user requests error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching user requests",
+      error: error.message
+    });
   }
 };
 
+// =====================================================
+// GET OWNER REQUESTS
+// GET /api/requests/owner/:ownerId
+// Optional: /api/requests/owner/:ownerId?status=pending
+// =====================================================
 
-// 📥 Get requests for an owner (only requests sent to their hostels)
 exports.getOwnerRequests = async (req, res) => {
   try {
     const { ownerId } = req.params;
+    const { status } = req.query;
 
-    const requests = await Request.find({ ownerId })
-      .populate("userId", "name email")
-      .populate({
-        path: "hostelId",
-        select: "name area ownerId",
-        populate: { path: "ownerId", select: "name email" }
+    if (!isValidId(ownerId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ownerId"
       });
+    }
 
-    res.status(200).json({ count: requests.length, data: requests });
+    const filter = { ownerId };
+
+    if (status && ["pending", "accepted", "declined"].includes(status)) {
+      filter.status = status;
+    }
+
+    const requests = await Request.find(filter)
+      .populate("userId", "name email mobile")
+      .populate("hostelId", "name area address images roomSharing vacancy")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      count: requests.length,
+      pendingCount: requests.filter(
+        (request) => request.status === "pending"
+      ).length,
+      data: requests
+    });
   } catch (error) {
-    res.status(500).json({ message: "Error fetching owner requests", error: error.message });
+    console.error("Get owner requests error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching owner requests",
+      error: error.message
+    });
   }
 };
 
-// 📥 Update request status
+// =====================================================
+// UPDATE REQUEST STATUS
+// ACCEPT / DECLINE
+// PUT /api/requests/:requestId/status
+// =====================================================
+
 exports.updateRequestStatus = async (req, res) => {
   try {
     const { requestId } = req.params;
-    const { status } = req.body; // accepted / declined
+    const { status } = req.body;
+
+    if (!isValidId(requestId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid requestId"
+      });
+    }
+
+    if (!["accepted", "declined"].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Status must be accepted or declined"
+      });
+    }
 
     const request = await Request.findById(requestId);
-    if (!request) return res.status(404).json({ message: "Request not found" });
 
-    const hostel = await Hostel.findById(request.hostelId);
-    if (!hostel) return res.status(404).json({ message: "Hostel not found" });
-    
-    const user = await User.findById(request.userId);
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: "Request not found"
+      });
+    }
 
-    const sharingType = request.sharingType;
+    // Only pending requests can be processed.
+    if (request.status !== "pending") {
+      return res.status(409).json({
+        success: false,
+        message: `This request has already been ${request.status}`
+      });
+    }
 
-    // ✅ Accept request: reduce vacancy and add user to hostel
+    const [hostel, user] = await Promise.all([
+      Hostel.findById(request.hostelId),
+      User.findById(request.userId)
+    ]);
+
+    if (!hostel) {
+      return res.status(404).json({
+        success: false,
+        message: "Hostel/property not found"
+      });
+    }
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    const normalizedSharingType =
+      normalizeSharingType(request.sharingType);
+
+    if (!normalizedSharingType) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid sharing type: ${request.sharingType}`
+      });
+    }
+
+    const vacancyKey = sharingMap[normalizedSharingType];
+
+    // =================================================
+    // ACCEPT REQUEST
+    // =================================================
+
     if (status === "accepted") {
-      if (!hostel.vacancy.hasOwnProperty(sharingType)) {
-        return res.status(400).json({ message: "Invalid sharing type" });
+      const otherAcceptedRequest = await Request.findOne({
+        userId: request.userId,
+        status: "accepted",
+        _id: { $ne: request._id }
+      });
+
+      if (otherAcceptedRequest) {
+        return res.status(409).json({
+          success: false,
+          message: "User has already joined another property"
+        });
       }
 
-      if (hostel.vacancy[sharingType] <= 0) {
-        return res.status(400).json({ message: `${sharingType} rooms are full` });
+      if (
+        !hostel.vacancy ||
+        typeof hostel.vacancy[vacancyKey] === "undefined"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: `${vacancyKey} vacancy is not configured`
+        });
       }
 
-      // Reduce available room count
-      hostel.vacancy[sharingType] -= 1;
+      if (Number(hostel.vacancy[vacancyKey]) <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: `${normalizedSharingType}-sharing rooms are full`
+        });
+      }
+
+      // Reduce available vacancy.
+      hostel.vacancy[vacancyKey] =
+        Number(hostel.vacancy[vacancyKey]) - 1;
+
+      // Add user to hostelUsers only once.
       hostel.hostelUsers = hostel.hostelUsers || [];
-      hostel.hostelUsers.addToSet(request.userId);
-      hostel.status
-      await hostel.save();
 
-      // ✅ Auto-detect sharing price from hostel model
-      const sharingPrice =
-        request.sharingPrice || hostel.roomSharing?.[sharingType] || 0;
+      const alreadyInHostel = hostel.hostelUsers.some(
+        (id) => id.toString() === request.userId.toString()
+      );
 
-      // ✅ Update user's hostel details
+      if (!alreadyInHostel) {
+        hostel.hostelUsers.push(request.userId);
+      }
+
+      // Get price for the selected sharing type.
+      let sharingPrice = 0;
+
+      if (hostel.roomSharing) {
+        if (hostel.roomSharing[vacancyKey] !== undefined) {
+          sharingPrice = hostel.roomSharing[vacancyKey];
+        } else if (
+          hostel.roomSharing[normalizedSharingType] !== undefined
+        ) {
+          sharingPrice = hostel.roomSharing[normalizedSharingType];
+        }
+      }
+
+      if (
+        request.sharingPrice !== undefined &&
+        request.sharingPrice !== null
+      ) {
+        sharingPrice = request.sharingPrice;
+      }
+
       user.joinedHostel = {
         hostelId: hostel._id,
         hostelName: hostel.name,
         ownerId: hostel.ownerId,
-        sharingType,
+        sharingType: normalizedSharingType,
         sharingPrice,
-        area: hostel.area,
-        address: hostel.address,
-        status,
-        joinedDate: new Date(),
+        area: hostel.area || "",
+        address: hostel.address || "",
+        status: "accepted",
+        joinedDate: new Date()
       };
 
-      await user.save();
-    }
-
-    // ✅ Decline: Restore vacancy if previously accepted
-    if (request.status === "accepted" && status === "declined") {
-      hostel.vacancy[request.sharingType] += 1;
-      hostel.hostelUsers.pull(request.userId);
       await hostel.save();
-
-      user.joinedHostel = {}; // remove hostel details
       await user.save();
     }
 
-    // ✅ Update request status
+    // =================================================
+    // SAVE REQUEST STATUS
+    // =================================================
+
     request.status = status;
     await request.save();
 
-    res.status(200).json({
+    // =================================================
+    // NOTIFY THE ORIGINAL SENDER
+    // =================================================
+
+    const hostelName = hostel.name || "your property";
+
+    if (request.senderType === "user") {
+      // User originally sent it, so notify the user of owner's response.
+      await createRequestNotification({
+        req,
+        recipientId: request.userId,
+        recipientType: "user",
+        senderId: request.ownerId,
+        senderType: "owner",
+        title:
+          status === "accepted"
+            ? "Booking Request Accepted"
+            : "Booking Request Declined",
+        message:
+          status === "accepted"
+            ? `Your request for ${hostelName} has been accepted.`
+            : `Your request for ${hostelName} has been declined.`,
+        requestId: request._id,
+        actionUrl: "/my-requests"
+      });
+    } else {
+      // Owner originally sent it, so notify the owner of user's response.
+      await createRequestNotification({
+        req,
+        recipientId: request.ownerId,
+        recipientType: "owner",
+        senderId: request.userId,
+        senderType: "user",
+        title:
+          status === "accepted"
+            ? "Property Request Accepted"
+            : "Property Request Declined",
+        message:
+          status === "accepted"
+            ? `The user accepted your request for ${hostelName}.`
+            : `The user declined your request for ${hostelName}.`,
+        requestId: request._id,
+        actionUrl: "/owner-requests"
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
       message: `Request ${status} successfully`,
-      data: request,
+      data: request
     });
   } catch (error) {
-    console.error("Error updating request:", error);
-    res.status(500).json({
-      message: "Error updating request",
-      error: error.message,
+    console.error("Update request status error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Error updating request status",
+      error: error.message
     });
   }
 };
 
-// Get joined hostel details for a user
+// =====================================================
+// GET JOINED HOSTEL
+// GET /api/requests/joined-hostel/:userId
+// =====================================================
+
 exports.getJoinedHostel = async (req, res) => {
   try {
     const { userId } = req.params;
 
-    // Find accepted request for this user
+    if (!isValidId(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid userId"
+      });
+    }
+
     const request = await Request.findOne({
       userId,
       status: "accepted"
-    }).populate("hostelId").populate("ownerId", "name email mobile");
+    })
+      .populate("hostelId")
+      .populate("ownerId", "name email mobile");
 
     if (!request) {
-      return res.status(404).json({ message: "User has not joined any hostel yet" });
+      return res.status(404).json({
+        success: false,
+        message: "User has not joined any hostel yet"
+      });
+    }
+
+    if (!request.hostelId) {
+      return res.status(404).json({
+        success: false,
+        message: "Hostel details not found"
+      });
     }
 
     const hostel = request.hostelId;
     const owner = request.ownerId;
 
-    res.status(200).json({
-      hostel: {
-        id: hostel._id,
-        name: hostel.name,
-        area: hostel.area,
-        description: hostel.description,
-        images: hostel.images,
-        roomSharing: hostel.roomSharing,
-        vacancy: hostel.vacancy
-      },
-      owner: {
-        id: owner._id,
-        name: owner.name,
-        email: owner.email,
-        mobile: owner.mobile
-      },
-      sharingType: request.sharingType
+    return res.status(200).json({
+      success: true,
+      data: {
+        hostel: {
+          id: hostel._id,
+          name: hostel.name,
+          area: hostel.area,
+          address: hostel.address,
+          description: hostel.description,
+          images: hostel.images,
+          roomSharing: hostel.roomSharing,
+          vacancy: hostel.vacancy
+        },
+        owner: owner
+          ? {
+              id: owner._id,
+              name: owner.name,
+              email: owner.email,
+              mobile: owner.mobile
+            }
+          : null,
+        sharingType: request.sharingType,
+        status: request.status
+      }
     });
   } catch (error) {
-    res.status(500).json({ message: "Error fetching joined hostel", error: error.message });
+    console.error("Get joined hostel error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching joined hostel",
+      error: error.message
+    });
   }
 };
