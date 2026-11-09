@@ -8,8 +8,8 @@ const cors = require('cors');
 const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
-const startSubscriptionExpiryJob =require('./jobs/subscriptionExpiryJob');
 
+const startSubscriptionExpiryJob = require('./jobs/subscriptionExpiryJob');
 
 /* =========================================================
    ROUTES
@@ -33,7 +33,9 @@ const subscriptionRoutes = require('./routes/subscriptionRoutes');
 ========================================================= */
 
 const app = express();
+
 const PORT = process.env.PORT || 3200;
+
 const server = http.createServer(app);
 
 /* =========================================================
@@ -42,7 +44,7 @@ const server = http.createServer(app);
 
 console.log('');
 console.log('==============================================');
-console.log('        HOSTEL BACKEND CONFIGURATION');
+console.log('       HOSTEL BACKEND CONFIGURATION');
 console.log('==============================================');
 
 console.log('MongoDB:', process.env.MONGO_URI ? 'LOADED' : 'MISSING');
@@ -69,106 +71,168 @@ console.log(
     : 'MISSING'
 );
 
-console.log('PayU Merchant Key:', process.env.MERCHANT_KEY ? 'LOADED' : 'MISSING');
-console.log('PayU Environment:', process.env.PAYU_ENVIRONMENT || 'NOT SET');
-console.log('Frontend URL:', process.env.FRONTEND_URL || 'NOT SET');
+console.log(
+  'PayU Merchant Key:',
+  process.env.MERCHANT_KEY ? 'LOADED' : 'MISSING'
+);
+
+console.log(
+  'PayU Environment:',
+  process.env.PAYU_ENVIRONMENT || 'NOT SET'
+);
+
+console.log(
+  'Frontend URL:',
+  process.env.FRONTEND_URL || 'NOT SET'
+);
 
 console.log('==============================================');
 console.log('');
 
 /* =========================================================
-   ALLOWED ORIGINS
+   ALLOWED FRONTEND ORIGINS
 ========================================================= */
 
 const allowedOrigins = [
   'http://localhost:4200',
   'http://localhost:55187',
   'http://localhost:58250',
+
+  // User application
   'https://renatlhub-user-web.onrender.com',
+
+  // Owner application
   'https://ownerapp-ij57.onrender.com',
+
+  // Existing frontend domains
   'https://hostel-find.vercel.app',
   'https://pillisrikanth.github.io',
   'https://pillisrikanth.github.io/amgular_admin'
 ];
 
 /* =========================================================
-   CORS
+   SHARED CORS CONFIGURATION
 ========================================================= */
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow requests without an Origin header, such as Postman.
-      if (!origin || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
+const corsOptions = {
+  origin: (origin, callback) => {
 
-      console.log('CORS blocked:', origin);
-      return callback(new Error('CORS not allowed'));
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true
-  })
-);
+    // Allow requests without Origin (Postman/server-to-server).
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    console.log('CORS BLOCKED:', origin);
+
+    return callback(new Error('CORS not allowed'));
+  },
+
+  methods: [
+    'GET',
+    'POST',
+    'PUT',
+    'PATCH',
+    'DELETE',
+    'OPTIONS'
+  ],
+
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization'
+  ],
+
+  credentials: true
+};
+
+// Express CORS
+app.use(cors(corsOptions));
+
+// Handle preflight requests.
+app.options(/.*/, cors(corsOptions));
 
 /* =========================================================
    BODY PARSING
 ========================================================= */
 
-app.use(bodyParser.json({ limit: '10mb' }));
-app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
+app.use(bodyParser.json({
+  limit: '10mb'
+}));
+
+app.use(bodyParser.urlencoded({
+  extended: true,
+  limit: '10mb'
+}));
 
 /* =========================================================
-   SOCKET.IO
+   SOCKET.IO CONFIGURATION
 ========================================================= */
 
 const io = new Server(server, {
-  cors: {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    credentials: true
-  }
+  cors: corsOptions,
+
+  transports: ['websocket', 'polling'],
+
+  pingTimeout: 60000,
+
+  pingInterval: 25000
 });
 
-// Make Socket.IO available to Express controllers.
+// Share Socket.IO with controllers.
 app.set('io', io);
-
-// Retain this if other existing controllers use global.io.
 global.io = io;
 
+/* =========================================================
+   SOCKET CONNECTION EVENTS
+========================================================= */
+
 io.on('connection', (socket) => {
+
   console.log('Socket connected:', socket.id);
 
-  // Owner/admin chat room
+  // Owner/admin chat room.
   socket.on('admin-chat:join-admin', (adminId) => {
+
     if (!adminId || typeof adminId !== 'string') {
       console.log('Invalid admin chat room ID');
       return;
     }
 
     const room = `admin-${adminId}`;
+
     socket.join(room);
 
     console.log(`Socket ${socket.id} joined ${room}`);
   });
 
-  // User chat room
+  // User chat room.
   socket.on('admin-chat:join-user', (userId) => {
+
     if (!userId || typeof userId !== 'string') {
       console.log('Invalid user chat room ID');
       return;
     }
 
     const room = `user-${userId}`;
+
     socket.join(room);
 
     console.log(`Socket ${socket.id} joined ${room}`);
   });
 
   socket.on('disconnect', (reason) => {
-    console.log('Socket disconnected:', socket.id, reason);
+
+    console.log(
+      'Socket disconnected:',
+      socket.id,
+      reason
+    );
+
   });
+
 });
 
 /* =========================================================
@@ -176,13 +240,23 @@ io.on('connection', (socket) => {
 ========================================================= */
 
 app.get('/', (req, res) => {
+
   res.status(200).json({
     success: true,
     message: 'Hostel Backend API is running',
+
     server: 'Node.js + Express + Socket.IO',
-    port: PORT,
+
+    database:
+      mongoose.connection.readyState === 1
+        ? 'Connected'
+        : 'Disconnected',
+
+    socketIO: 'Enabled',
+
     timestamp: new Date().toISOString()
   });
+
 });
 
 /* =========================================================
@@ -190,57 +264,114 @@ app.get('/', (req, res) => {
 ========================================================= */
 
 if (!process.env.MONGO_URI) {
-  console.error('MONGO_URI is missing in .env file');
+
+  console.error('ERROR: MONGO_URI is missing');
+
 } else {
+
   mongoose
-    .connect(process.env.MONGO_URI)
-    .then(() => console.log('MongoDB connected successfully'))
-    .catch((error) => console.error('MongoDB connection error:', error.message));
+    .connect(process.env.MONGO_URI, {
+      serverSelectionTimeoutMS: 15000
+    })
+    .then(() => {
+
+      console.log('MongoDB connected successfully');
+
+    })
+    .catch((error) => {
+
+      console.error(
+        'MongoDB connection error:',
+        error.message
+      );
+
+    });
+
 }
+
+// Monitor database connection.
+mongoose.connection.on('disconnected', () => {
+  console.log('MongoDB disconnected');
+});
+
+mongoose.connection.on('reconnected', () => {
+  console.log('MongoDB reconnected');
+});
+
+mongoose.connection.on('error', (error) => {
+  console.error('MongoDB error:', error.message);
+});
 
 /* =========================================================
    API ROUTES
 ========================================================= */
 
+// User authentication and user APIs.
 app.use('/api/users', user);
+
+// Admin chat.
 app.use('/api/admin-chat', adminChatRoutes);
+
+// Hostel APIs.
 app.use('/api/hostels', hostelRoutes);
+
+// Booking APIs.
 app.use('/api/bookings', bookingRoutes);
+
+// User and owner chat.
 app.use('/api/chat', chatRoutes);
+
+// Requests.
 app.use('/api/requests', requestRoutes);
+
+// Reviews.
 app.use('/api/reviews', reviewRoutes);
+
+// Notifications - mounted only once.
 app.use('/api/notification', notification);
+
+// Owner APIs.
 app.use('/api/owner', ownerRoutes);
+
+// Subscription APIs.
 app.use('/api/subscriptions', subscriptionRoutes);
-// Once, after creating the Express app:
-app.use('/api/notification', require('./routes/notification'));
 
-// Once, after creating the Socket.IO server:
-global.io = io;
-app.set('io', io);
-
-// Preserve your existing transaction route mounting.
+// Transaction APIs.
 app.use('/', transaction);
 
+// Rent payment APIs.
 app.use('/api/cosmic-payments', cosmicPaymentRoutes);
 
 /* =========================================================
-   STATIC UPLOADS
+   STATIC IMAGE UPLOADS
 ========================================================= */
 
 const uploadsPath = path.join(__dirname, 'uploads');
-app.use('/uploads', express.static(uploadsPath));
+
+app.use(
+  '/uploads',
+  express.static(uploadsPath)
+);
 
 /* =========================================================
    404 HANDLER
 ========================================================= */
 
 app.use((req, res) => {
+
+  console.log(
+    'API endpoint not found:',
+    req.method,
+    req.originalUrl
+  );
+
   res.status(404).json({
     success: false,
     message: 'API endpoint not found',
+    method: req.method,
     path: req.originalUrl
   });
+
 });
 
 /* =========================================================
@@ -248,38 +379,80 @@ app.use((req, res) => {
 ========================================================= */
 
 app.use((error, req, res, next) => {
-  console.error('Server error:', error.message);
+
+  console.error(
+    'Server error:',
+    error.message
+  );
 
   if (error.message === 'CORS not allowed') {
+
     return res.status(403).json({
       success: false,
       message: 'CORS not allowed',
       origin: req.headers.origin || null
     });
+
   }
 
   return res.status(error.status || 500).json({
     success: false,
     message: error.message || 'Internal server error'
   });
+
 });
 
 /* =========================================================
    START SERVER
 ========================================================= */
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
+
   console.log('');
+
   console.log('==============================================');
   console.log('          HOSTEL BACKEND STARTED');
   console.log('==============================================');
-  console.log(`Server:    http://localhost:${PORT}`);
-  console.log(`API:       http://localhost:${PORT}/api`);
-  console.log(`User API:  http://localhost:${PORT}/api/users`);
-  console.log(`Chat API:  http://localhost:${PORT}/api/admin-chat`);
-  console.log(`Hostels:   http://localhost:${PORT}/api/hostels`);
-  console.log(`Uploads:   http://localhost:${PORT}/uploads`);
+
+  console.log(`Port:      ${PORT}`);
+  console.log(`API:       /api`);
+  console.log(`User API:  /api/users`);
+  console.log(`Chat API:  /api/admin-chat`);
+  console.log(`Hostels:   /api/hostels`);
+  console.log(`Bookings:  /api/bookings`);
+  console.log(`Owner:     /api/owner`);
+  console.log(`Uploads:   /uploads`);
+
   console.log('Socket.IO enabled');
+
   console.log('==============================================');
+
   console.log('');
+
+  // Start subscription expiry job after server startup.
+  if (typeof startSubscriptionExpiryJob === 'function') {
+
+    try {
+
+      startSubscriptionExpiryJob();
+
+      console.log('Subscription expiry job started');
+
+    } catch (error) {
+
+      console.error(
+        'Subscription expiry job error:',
+        error.message
+      );
+
+    }
+
+  } else {
+
+    console.log(
+      'Subscription expiry job not started: export is not a function'
+    );
+
+  }
+
 });
